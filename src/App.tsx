@@ -37,6 +37,18 @@ export default function App() {
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [initError, setInitError] = useState<string | null>(null);
   
+  // Input Modal state
+  const [inputModal, setInputModal] = useState<{ isOpen: boolean; prompt: string }>({ isOpen: false, prompt: '' });
+  const [inputValue, setInputValue] = useState('');
+  
+  // Execution refs
+  const providedInputsRef = useRef<string[]>([]);
+  const currentInputIndexRef = useRef<number>(0);
+  const outputBufferRef = useRef<TerminalLine[]>([]);
+  const currentRunTypeRef = useRef<'script' | 'terminal' | null>(null);
+  const currentTerminalInputRef = useRef<string>('');
+  const historyBeforeRunRef = useRef<TerminalLine[]>([]);
+  
   // Autocomplete state
   const [suggestions, setSuggestions] = useState<string[]>([]);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
@@ -48,6 +60,19 @@ export default function App() {
   const outputRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    (window as any).getProvidedInput = () => {
+      if (currentInputIndexRef.current < providedInputsRef.current.length) {
+        return providedInputsRef.current[currentInputIndexRef.current++];
+      }
+      return null;
+    };
+    (window as any).setCurrentPrompt = (prompt: string) => {
+      setInputModal({ isOpen: true, prompt });
+    };
+    (window as any).setIsWaitingForInput = (val: boolean) => {
+      (window as any).isWaitingForInput = val;
+    };
+
     const initPyodide = async () => {
       try {
         pyodideRef.current = await window.loadPyodide({
@@ -115,56 +140,150 @@ export default function App() {
     };
   }, []);
 
-  const runCode = async () => {
+  const runCode = async (isContinuation: boolean | React.MouseEvent = false) => {
     if (!pyodideRef.current) return;
     
-    setIsRunning(true);
-    setTerminalHistory([{ type: 'system', content: '--- Executando meu_script.py ---' }]);
+    const isCont = typeof isContinuation === 'boolean' ? isContinuation : false;
+    
+    if (!isCont) {
+      setIsRunning(true);
+      providedInputsRef.current = [];
+      currentRunTypeRef.current = 'script';
+      const initialHistory: TerminalLine[] = [{ type: 'system', content: '--- Executando meu_script.py ---' }];
+      historyBeforeRunRef.current = initialHistory;
+      setTerminalHistory(initialHistory);
+    }
+    
+    currentInputIndexRef.current = 0;
+    outputBufferRef.current = [];
+    (window as any).isWaitingForInput = false;
 
     try {
       // Redirect stdout
       pyodideRef.current.setStdout({
         batched: (msg: string) => {
-          setTerminalHistory(prev => [...prev, { type: 'output', content: msg }]);
+          outputBufferRef.current.push({ type: 'output', content: msg });
         }
       });
       
       // Redirect stderr
       pyodideRef.current.setStderr({
         batched: (msg: string) => {
-          setTerminalHistory(prev => [...prev, { type: 'error', content: msg }]);
+          outputBufferRef.current.push({ type: 'error', content: msg });
         }
       });
 
       pyodideRef.current.runPython(`
-import sys
 import builtins
 import js
 
+class InputRequiredException(BaseException):
+    pass
+
 def custom_input(prompt=""):
-    if prompt:
-        print(prompt, end="")
-    
-    try:
-        res = js.prompt(prompt)
-        if res is None:
-            print()
-            return ""
-        print(res)
-        return res
-    except Exception:
-        print("\\n[Erro: O navegador bloqueou o prompt.]")
-        return ""
+    val = js.getProvidedInput()
+    if val is not None:
+        print(prompt + str(val))
+        return val
+    else:
+        js.setCurrentPrompt(prompt)
+        js.setIsWaitingForInput(True)
+        raise InputRequiredException("INPUT_REQUIRED")
 
 builtins.input = custom_input
       `);
 
       await pyodideRef.current.runPythonAsync(code);
       
-    } catch (err: any) {
-      setTerminalHistory(prev => [...prev, { type: 'error', content: err.message || 'Ocorreu um erro ao executar o código.' }]);
-    } finally {
+      setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
       setIsRunning(false);
+      currentRunTypeRef.current = null;
+      
+    } catch (err: any) {
+      if ((window as any).isWaitingForInput) {
+        (window as any).isWaitingForInput = false;
+        // Wait for modal
+        setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
+      } else {
+        outputBufferRef.current.push({ type: 'error', content: err.message || 'Ocorreu um erro ao executar o código.' });
+        setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
+        setIsRunning(false);
+        currentRunTypeRef.current = null;
+      }
+    }
+  };
+
+  const runTerminalCommand = async (input: string, isContinuation: boolean = false) => {
+    if (!pyodideRef.current) return;
+
+    const isCont = typeof isContinuation === 'boolean' ? isContinuation : false;
+
+    if (!isCont) {
+      setIsRunning(true);
+      providedInputsRef.current = [];
+      currentRunTypeRef.current = 'terminal';
+      currentTerminalInputRef.current = input;
+      historyBeforeRunRef.current = [...terminalHistory, { type: 'input', content: input }];
+      setTerminalHistory(historyBeforeRunRef.current);
+    }
+
+    currentInputIndexRef.current = 0;
+    outputBufferRef.current = [];
+    (window as any).isWaitingForInput = false;
+
+    try {
+      pyodideRef.current.setStdout({
+        batched: (msg: string) => {
+          outputBufferRef.current.push({ type: 'output', content: msg });
+        }
+      });
+      
+      pyodideRef.current.setStderr({
+        batched: (msg: string) => {
+          outputBufferRef.current.push({ type: 'error', content: msg });
+        }
+      });
+
+      pyodideRef.current.runPython(`
+import builtins
+import js
+
+class InputRequiredException(BaseException):
+    pass
+
+def custom_input(prompt=""):
+    val = js.getProvidedInput()
+    if val is not None:
+        print(prompt + str(val))
+        return val
+    else:
+        js.setCurrentPrompt(prompt)
+        js.setIsWaitingForInput(True)
+        raise InputRequiredException("INPUT_REQUIRED")
+
+builtins.input = custom_input
+      `);
+
+      const result = await pyodideRef.current.runPythonAsync(currentTerminalInputRef.current);
+      
+      if (result !== undefined) {
+        outputBufferRef.current.push({ type: 'output', content: String(result) });
+      }
+      
+      setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
+      setIsRunning(false);
+      currentRunTypeRef.current = null;
+    } catch (err: any) {
+      if ((window as any).isWaitingForInput) {
+        (window as any).isWaitingForInput = false;
+        // Wait for modal
+        setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
+      } else {
+        outputBufferRef.current.push({ type: 'error', content: err.message });
+        setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
+        setIsRunning(false);
+        currentRunTypeRef.current = null;
+      }
     }
   };
 
@@ -174,32 +293,27 @@ builtins.input = custom_input
 
     const input = terminalInput;
     setTerminalInput('');
-    setTerminalHistory(prev => [...prev, { type: 'input', content: input }]);
-    setIsRunning(true);
+    runTerminalCommand(input);
+  };
 
-    try {
-      pyodideRef.current.setStdout({
-        batched: (msg: string) => {
-          setTerminalHistory(prev => [...prev, { type: 'output', content: msg }]);
-        }
-      });
-      
-      pyodideRef.current.setStderr({
-        batched: (msg: string) => {
-          setTerminalHistory(prev => [...prev, { type: 'error', content: msg }]);
-        }
-      });
-
-      const result = await pyodideRef.current.runPythonAsync(input);
-      
-      if (result !== undefined) {
-        setTerminalHistory(prev => [...prev, { type: 'output', content: String(result) }]);
-      }
-    } catch (err: any) {
-      setTerminalHistory(prev => [...prev, { type: 'error', content: err.message }]);
-    } finally {
-      setIsRunning(false);
+  const handleInputSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    providedInputsRef.current.push(inputValue);
+    setInputValue('');
+    setInputModal({ isOpen: false, prompt: '' });
+    
+    if (currentRunTypeRef.current === 'script') {
+      runCode(true);
+    } else if (currentRunTypeRef.current === 'terminal') {
+      runTerminalCommand('', true);
     }
+  };
+
+  const handleInputCancel = () => {
+    setInputModal({ isOpen: false, prompt: '' });
+    setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current, { type: 'error', content: 'Execução interrompida pelo usuário.' }]);
+    setIsRunning(false);
+    currentRunTypeRef.current = null;
   };
 
   const handleSave = () => {
@@ -296,6 +410,43 @@ builtins.input = custom_input
 
   return (
     <div className="flex flex-col h-screen bg-[#1e1e1e] text-gray-300 font-sans">
+      {/* Input Modal */}
+      {inputModal.isOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50">
+          <div className="bg-[#252526] border border-[#333] rounded-lg shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-4 py-3 bg-[#2d2d2d] border-b border-[#333] flex justify-between items-center">
+              <h3 className="text-sm font-medium text-gray-200">Entrada Solicitada</h3>
+            </div>
+            <form onSubmit={handleInputSubmit} className="p-4">
+              <p className="text-sm text-gray-300 mb-3 font-mono">{inputModal.prompt}</p>
+              <input
+                type="text"
+                autoFocus
+                value={inputValue}
+                onChange={(e) => setInputValue(e.target.value)}
+                className="w-full bg-[#1e1e1e] border border-[#444] rounded px-3 py-2 text-gray-200 font-mono text-sm focus:outline-none focus:border-blue-500 mb-4"
+                placeholder="Digite sua resposta..."
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={handleInputCancel}
+                  className="px-4 py-2 text-sm font-medium text-gray-400 hover:text-gray-200 transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-500 text-white rounded transition-colors"
+                >
+                  Enviar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 bg-[#252526] border-b border-[#333]">
         <div className="flex items-center gap-3">
@@ -318,7 +469,7 @@ builtins.input = custom_input
           </button>
           
           <button
-            onClick={runCode}
+            onClick={() => runCode(false)}
             disabled={isPyodideLoading || isRunning}
             className={`flex items-center gap-2 px-4 py-1.5 text-sm font-medium text-white rounded-md transition-colors ${
               isPyodideLoading || isRunning 
