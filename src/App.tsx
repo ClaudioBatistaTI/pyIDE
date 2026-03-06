@@ -3,7 +3,7 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
-import { Play, Save, Terminal, AlertCircle, Loader2, Download, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Play, Save, Terminal, AlertCircle, Loader2, Download, Trash2, Eye, EyeOff, PackagePlus } from 'lucide-react';
 import getCaretCoordinates from 'textarea-caret';
 
 // Declare pyodide global
@@ -29,9 +29,21 @@ const PYTHON_KEYWORDS = [
 ];
 
 export default function App() {
-  const [code, setCode] = useState<string>('# Escreva seu código Python aqui\nnome = input("Qual é o seu nome? ")\nprint(f"Olá, {nome}!")\n');
-  const [terminalHistory, setTerminalHistory] = useState<TerminalLine[]>([]);
+  const [code, setCode] = useState<string>(() => {
+    const saved = localStorage.getItem('python_code');
+    return saved !== null ? saved : '# Escreva seu código Python aqui\nnome = input("Qual é o seu nome? ")\nprint(f"Olá, {nome}!")\n';
+  });
+  const [terminalHistory, setTerminalHistory] = useState<TerminalLine[]>(() => {
+    const saved = localStorage.getItem('python_terminal_history');
+    return saved ? JSON.parse(saved) : [];
+  });
   const [terminalInput, setTerminalInput] = useState<string>('');
+  const [commandHistory, setCommandHistory] = useState<string[]>(() => {
+    const saved = localStorage.getItem('python_command_history');
+    return saved ? JSON.parse(saved) : [];
+  });
+  const [historyIndex, setHistoryIndex] = useState<number>(-1);
+  const [tempInput, setTempInput] = useState<string>('');
   const [showPrompt, setShowPrompt] = useState<boolean>(true);
   const [isPyodideLoading, setIsPyodideLoading] = useState<boolean>(true);
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -58,6 +70,18 @@ export default function App() {
 
   const pyodideRef = useRef<any>(null);
   const outputRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    localStorage.setItem('python_code', code);
+  }, [code]);
+
+  useEffect(() => {
+    localStorage.setItem('python_terminal_history', JSON.stringify(terminalHistory));
+  }, [terminalHistory]);
+
+  useEffect(() => {
+    localStorage.setItem('python_command_history', JSON.stringify(commandHistory));
+  }, [commandHistory]);
 
   useEffect(() => {
     (window as any).getProvidedInput = () => {
@@ -193,6 +217,8 @@ def custom_input(prompt=""):
 builtins.input = custom_input
       `);
 
+      // Automatically load packages like numpy, pandas if imported
+      await pyodideRef.current.loadPackagesFromImports(code);
       await pyodideRef.current.runPythonAsync(code);
       
       setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
@@ -264,6 +290,7 @@ def custom_input(prompt=""):
 builtins.input = custom_input
       `);
 
+      await pyodideRef.current.loadPackagesFromImports(currentTerminalInputRef.current);
       const result = await pyodideRef.current.runPythonAsync(currentTerminalInputRef.current);
       
       if (result !== undefined) {
@@ -293,7 +320,36 @@ builtins.input = custom_input
 
     const input = terminalInput;
     setTerminalInput('');
+    setCommandHistory(prev => [...prev, input]);
+    setHistoryIndex(-1);
+    setTempInput('');
     runTerminalCommand(input);
+  };
+
+  const handleTerminalKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      if (commandHistory.length > 0) {
+        const nextIndex = historyIndex + 1;
+        if (nextIndex < commandHistory.length) {
+          if (historyIndex === -1) {
+            setTempInput(terminalInput);
+          }
+          setHistoryIndex(nextIndex);
+          setTerminalInput(commandHistory[commandHistory.length - 1 - nextIndex]);
+        }
+      }
+    } else if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      if (historyIndex > 0) {
+        const nextIndex = historyIndex - 1;
+        setHistoryIndex(nextIndex);
+        setTerminalInput(commandHistory[commandHistory.length - 1 - nextIndex]);
+      } else if (historyIndex === 0) {
+        setHistoryIndex(-1);
+        setTerminalInput(tempInput);
+      }
+    }
   };
 
   const handleInputSubmit = (e: React.FormEvent) => {
@@ -314,6 +370,17 @@ builtins.input = custom_input
     setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current, { type: 'error', content: 'Execução interrompida pelo usuário.' }]);
     setIsRunning(false);
     currentRunTypeRef.current = null;
+  };
+
+  const handleClearCode = () => {
+    if (window.confirm('Tem certeza que deseja limpar todo o código?')) {
+      setCode('');
+    }
+  };
+
+  const handleInsertBasicImports = () => {
+    const basicImports = `import math\nimport random\nimport datetime\nimport collections\nimport itertools\nimport json\nimport re\n\n`;
+    setCode(prev => basicImports + prev);
   };
 
   const handleSave = () => {
@@ -460,6 +527,24 @@ builtins.input = custom_input
         </div>
         
         <div className="flex items-center gap-3">
+          <button
+            onClick={handleInsertBasicImports}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-[#333] rounded-md transition-colors"
+            title="Importar pacotes básicos do Python"
+          >
+            <PackagePlus size={16} />
+            <span className="hidden sm:inline">Pacotes Básicos</span>
+          </button>
+
+          <button
+            onClick={handleClearCode}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-[#333] rounded-md transition-colors"
+            title="Limpar código"
+          >
+            <Trash2 size={16} />
+            <span className="hidden sm:inline">Limpar</span>
+          </button>
+          
           <button
             onClick={handleSave}
             className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 bg-[#333] hover:bg-[#444] rounded-md transition-colors"
@@ -633,6 +718,7 @@ builtins.input = custom_input
                   type="text"
                   value={terminalInput}
                   onChange={(e) => setTerminalInput(e.target.value)}
+                  onKeyDown={handleTerminalKeyDown}
                   disabled={isRunning}
                   className="flex-1 bg-transparent outline-none text-gray-300 font-mono"
                   placeholder="Digite um comando Python..."
