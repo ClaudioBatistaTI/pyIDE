@@ -170,9 +170,23 @@ export default function App() {
               Colar desativado
             </span>
           </div>
-          <div className="flex-1 overflow-auto bg-[#1e1e1e] relative">
+          <div className="flex-1 overflow-auto bg-[#1e1e1e] flex">
             <div 
-              className="absolute inset-0"
+              className="w-12 flex-shrink-0 bg-[#1e1e1e] border-r border-[#333] text-[#858585] text-right pr-3 select-none sticky left-0 z-10"
+              style={{
+                fontFamily: '"JetBrains Mono", "Fira Code", monospace',
+                paddingTop: 16,
+                paddingBottom: 16,
+                fontSize: 14,
+                lineHeight: 1.5,
+              }}
+            >
+              {code.split('\n').map((_, i) => (
+                <div key={i}>{i + 1}</div>
+              ))}
+            </div>
+            <div 
+              className="flex-1 relative"
               onPasteCapture={handlePaste}
             >
               <Editor
@@ -183,8 +197,10 @@ export default function App() {
                 style={{
                   fontFamily: '"JetBrains Mono", "Fira Code", monospace',
                   fontSize: 14,
+                  lineHeight: 1.5,
                   minHeight: '100%',
                   outline: 'none',
+                  whiteSpace: 'pre',
                 }}
                 textareaClassName="focus:outline-none"
                 className="min-h-full"
