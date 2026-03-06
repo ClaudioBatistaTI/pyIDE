@@ -3,7 +3,7 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
-import { Play, Save, Terminal, AlertCircle, Loader2, Download } from 'lucide-react';
+import { Play, Save, Terminal, AlertCircle, Loader2, Download, Trash2, Eye, EyeOff } from 'lucide-react';
 
 // Declare pyodide global
 declare global {
@@ -12,12 +12,19 @@ declare global {
   }
 }
 
+type TerminalLine = {
+  type: 'input' | 'output' | 'error' | 'system';
+  content: string;
+};
+
 export default function App() {
   const [code, setCode] = useState<string>('# Escreva seu código Python aqui\nprint("Olá, Mundo!")\n');
-  const [output, setOutput] = useState<string>('');
+  const [terminalHistory, setTerminalHistory] = useState<TerminalLine[]>([]);
+  const [terminalInput, setTerminalInput] = useState<string>('');
+  const [showPrompt, setShowPrompt] = useState<boolean>(true);
   const [isPyodideLoading, setIsPyodideLoading] = useState<boolean>(true);
   const [isRunning, setIsRunning] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [initError, setInitError] = useState<string | null>(null);
   const pyodideRef = useRef<any>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
@@ -30,7 +37,7 @@ export default function App() {
         setIsPyodideLoading(false);
       } catch (err) {
         console.error('Failed to load Pyodide:', err);
-        setError('Falha ao carregar o interpretador Python. Verifique sua conexão.');
+        setInitError('Falha ao carregar o interpretador Python. Verifique sua conexão.');
         setIsPyodideLoading(false);
       }
     };
@@ -50,7 +57,7 @@ export default function App() {
       setTimeout(() => {
         clearInterval(checkPyodide);
         if (!pyodideRef.current) {
-          setError('Tempo limite excedido ao carregar o interpretador Python.');
+          setInitError('Tempo limite excedido ao carregar o interpretador Python.');
           setIsPyodideLoading(false);
         }
       }, 10000);
@@ -61,40 +68,92 @@ export default function App() {
     if (outputRef.current) {
       outputRef.current.scrollTop = outputRef.current.scrollHeight;
     }
-  }, [output]);
+  }, [terminalHistory]);
+
+  // Bloquear atalhos de nova aba e saída da página
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Tenta bloquear Ctrl+T (Nova Aba) e Ctrl+N (Nova Janela)
+      if ((e.ctrlKey || e.metaKey) && (e.key === 't' || e.key === 'n')) {
+        e.preventDefault();
+        alert('⚠️ Foco nos estudos! Tentar abrir novas abas foi bloqueado para manter sua concentração na programação.');
+      }
+    };
+
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Mostra um aviso se o usuário tentar fechar a aba ou recarregar a página
+      e.preventDefault();
+      e.returnValue = '';
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('beforeunload', handleBeforeUnload);
+
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+    };
+  }, []);
 
   const runCode = async () => {
     if (!pyodideRef.current) return;
     
     setIsRunning(true);
-    setOutput('');
-    setError(null);
+    setTerminalHistory([{ type: 'system', content: '--- Executando meu_script.py ---' }]);
 
     try {
       // Redirect stdout
-      let currentOutput = '';
       pyodideRef.current.setStdout({
         batched: (msg: string) => {
-          currentOutput += msg + '\n';
-          setOutput(currentOutput);
+          setTerminalHistory(prev => [...prev, { type: 'output', content: msg }]);
         }
       });
       
       // Redirect stderr
       pyodideRef.current.setStderr({
         batched: (msg: string) => {
-          currentOutput += `[Error] ${msg}\n`;
-          setOutput(currentOutput);
+          setTerminalHistory(prev => [...prev, { type: 'error', content: msg }]);
         }
       });
 
       await pyodideRef.current.runPythonAsync(code);
       
-      if (currentOutput === '') {
-        setOutput('Programa finalizado sem saída.');
+    } catch (err: any) {
+      setTerminalHistory(prev => [...prev, { type: 'error', content: err.message || 'Ocorreu um erro ao executar o código.' }]);
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
+  const handleTerminalSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!terminalInput.trim() || !pyodideRef.current || isRunning) return;
+
+    const input = terminalInput;
+    setTerminalInput('');
+    setTerminalHistory(prev => [...prev, { type: 'input', content: input }]);
+    setIsRunning(true);
+
+    try {
+      pyodideRef.current.setStdout({
+        batched: (msg: string) => {
+          setTerminalHistory(prev => [...prev, { type: 'output', content: msg }]);
+        }
+      });
+      
+      pyodideRef.current.setStderr({
+        batched: (msg: string) => {
+          setTerminalHistory(prev => [...prev, { type: 'error', content: msg }]);
+        }
+      });
+
+      const result = await pyodideRef.current.runPythonAsync(input);
+      
+      if (result !== undefined) {
+        setTerminalHistory(prev => [...prev, { type: 'output', content: String(result) }]);
       }
     } catch (err: any) {
-      setError(err.message || 'Ocorreu um erro ao executar o código.');
+      setTerminalHistory(prev => [...prev, { type: 'error', content: err.message }]);
     } finally {
       setIsRunning(false);
     }
@@ -203,7 +262,7 @@ export default function App() {
                   whiteSpace: 'pre',
                 }}
                 textareaClassName="focus:outline-none"
-                className="min-h-full"
+                className="language-python min-h-full"
               />
             </div>
           </div>
@@ -211,9 +270,29 @@ export default function App() {
 
         {/* Terminal Pane */}
         <div className="w-1/3 flex flex-col bg-[#1e1e1e]">
-          <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex items-center gap-2">
-            <Terminal size={14} />
-            Saída do Terminal
+          <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex justify-between items-center">
+            <div className="flex items-center gap-2">
+              <Terminal size={14} />
+              Saída do Terminal
+            </div>
+            <div className="flex items-center gap-3">
+              <button 
+                onClick={() => setShowPrompt(!showPrompt)}
+                className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
+                title={showPrompt ? "Ocultar Prompt" : "Mostrar Prompt"}
+              >
+                {showPrompt ? <EyeOff size={14} /> : <Eye size={14} />}
+                {showPrompt ? "Ocultar" : "Mostrar"}
+              </button>
+              <button 
+                onClick={() => setTerminalHistory([])}
+                className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
+                title="Limpar Terminal"
+              >
+                <Trash2 size={14} />
+                Limpar
+              </button>
+            </div>
           </div>
           
           <div className="flex-1 p-4 overflow-auto font-mono text-sm" ref={outputRef}>
@@ -222,18 +301,47 @@ export default function App() {
                 <Loader2 size={16} className="animate-spin" />
                 Carregando interpretador Python...
               </div>
-            ) : error ? (
+            ) : initError ? (
               <div className="text-red-400 whitespace-pre-wrap">
-                {error}
-              </div>
-            ) : output ? (
-              <div className="text-gray-300 whitespace-pre-wrap">
-                {output}
+                {initError}
               </div>
             ) : (
-              <div className="text-gray-500 italic">
-                A saída do seu programa aparecerá aqui.
+              <div className="flex flex-col gap-1">
+                {terminalHistory.length === 0 && (
+                  <div className="text-gray-500 italic mb-2">
+                    A saída do seu programa aparecerá aqui. Você também pode digitar comandos abaixo.
+                  </div>
+                )}
+                {terminalHistory.map((line, i) => (
+                  <div 
+                    key={i} 
+                    className={`whitespace-pre-wrap ${
+                      line.type === 'error' ? 'text-red-400' : 
+                      line.type === 'system' ? 'text-blue-400 italic' : 
+                      line.type === 'input' ? 'text-green-400' : 
+                      'text-gray-300'
+                    }`}
+                  >
+                    {line.type === 'input' ? `>>> ${line.content}` : line.content}
+                  </div>
+                ))}
               </div>
+            )}
+            
+            {!isPyodideLoading && !initError && showPrompt && (
+              <form onSubmit={handleTerminalSubmit} className="mt-2 flex items-start">
+                <span className="text-green-400 mr-2 mt-0.5">{">>>"}</span>
+                <input
+                  type="text"
+                  value={terminalInput}
+                  onChange={(e) => setTerminalInput(e.target.value)}
+                  disabled={isRunning}
+                  className="flex-1 bg-transparent outline-none text-gray-300 font-mono"
+                  placeholder="Digite um comando Python..."
+                  autoComplete="off"
+                  spellCheck="false"
+                />
+              </form>
             )}
           </div>
         </div>
