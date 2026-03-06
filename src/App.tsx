@@ -3,7 +3,7 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
-import { Play, Save, Terminal, AlertCircle, Loader2, Download, Trash2, Eye, EyeOff, PackagePlus } from 'lucide-react';
+import { Play, Save, Terminal, AlertCircle, Loader2, Download, Upload, Trash2, Eye, EyeOff } from 'lucide-react';
 import getCaretCoordinates from 'textarea-caret';
 
 // Declare pyodide global
@@ -217,8 +217,6 @@ def custom_input(prompt=""):
 builtins.input = custom_input
       `);
 
-      // Automatically load packages like numpy, pandas if imported
-      await pyodideRef.current.loadPackagesFromImports(code);
       await pyodideRef.current.runPythonAsync(code);
       
       setTerminalHistory([...historyBeforeRunRef.current, ...outputBufferRef.current]);
@@ -290,7 +288,6 @@ def custom_input(prompt=""):
 builtins.input = custom_input
       `);
 
-      await pyodideRef.current.loadPackagesFromImports(currentTerminalInputRef.current);
       const result = await pyodideRef.current.runPythonAsync(currentTerminalInputRef.current);
       
       if (result !== undefined) {
@@ -372,17 +369,6 @@ builtins.input = custom_input
     currentRunTypeRef.current = null;
   };
 
-  const handleClearCode = () => {
-    if (window.confirm('Tem certeza que deseja limpar todo o código?')) {
-      setCode('');
-    }
-  };
-
-  const handleInsertBasicImports = () => {
-    const basicImports = `import math\nimport random\nimport datetime\nimport collections\nimport itertools\nimport json\nimport re\n\n`;
-    setCode(prev => basicImports + prev);
-  };
-
   const handleSave = () => {
     const blob = new Blob([code], { type: 'text/plain' });
     const url = URL.createObjectURL(blob);
@@ -393,6 +379,23 @@ builtins.input = custom_input
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+  };
+
+  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const content = event.target?.result;
+      if (typeof content === 'string') {
+        setCode(content);
+      }
+    };
+    reader.readAsText(file);
+    
+    // Reset the input value so the same file can be selected again if needed
+    e.target.value = '';
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -527,24 +530,16 @@ builtins.input = custom_input
         </div>
         
         <div className="flex items-center gap-3">
-          <button
-            onClick={handleInsertBasicImports}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 hover:text-white hover:bg-[#333] rounded-md transition-colors"
-            title="Importar pacotes básicos do Python"
-          >
-            <PackagePlus size={16} />
-            <span className="hidden sm:inline">Pacotes Básicos</span>
-          </button>
-
-          <button
-            onClick={handleClearCode}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-red-400 hover:text-red-300 hover:bg-[#333] rounded-md transition-colors"
-            title="Limpar código"
-          >
-            <Trash2 size={16} />
-            <span className="hidden sm:inline">Limpar</span>
-          </button>
-          
+          <label className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 bg-[#333] hover:bg-[#444] rounded-md transition-colors cursor-pointer">
+            <Upload size={16} />
+            Importar .py
+            <input
+              type="file"
+              accept=".py,.txt"
+              onChange={handleImport}
+              className="hidden"
+            />
+          </label>
           <button
             onClick={handleSave}
             className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 bg-[#333] hover:bg-[#444] rounded-md transition-colors"
