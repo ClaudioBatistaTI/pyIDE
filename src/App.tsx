@@ -3,8 +3,10 @@ import Editor from 'react-simple-code-editor';
 import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
-import { Play, Save, Terminal, AlertCircle, Loader2, Download, Upload, Trash2, Eye, EyeOff } from 'lucide-react';
+import { Play, Save, Terminal, AlertCircle, Loader2, Download, Upload, Trash2, Eye, EyeOff, Menu } from 'lucide-react';
 import getCaretCoordinates from 'textarea-caret';
+import { FileNode } from './types';
+import FileExplorer from './components/FileExplorer';
 
 // Declare pyodide global
 declare global {
@@ -29,10 +31,36 @@ const PYTHON_KEYWORDS = [
 ];
 
 export default function App() {
-  const [code, setCode] = useState<string>(() => {
-    const saved = localStorage.getItem('python_code');
-    return saved !== null ? saved : '# Escreva seu código Python aqui\nnome = input("Qual é o seu nome? ")\nprint(f"Olá, {nome}!")\n';
+  const [files, setFiles] = useState<FileNode[]>(() => {
+    const saved = localStorage.getItem('python_files');
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch (e) {
+        console.error('Failed to parse saved files', e);
+      }
+    }
+    
+    // Fallback to legacy code or default
+    const legacyCode = localStorage.getItem('python_code');
+    const defaultContent = legacyCode !== null ? legacyCode : '# Escreva seu código Python aqui\nnome = input("Qual é o seu nome? ")\nprint(f"Olá, {nome}!")\n';
+    
+    return [
+      {
+        id: 'main.py',
+        name: 'main.py',
+        type: 'file',
+        parentId: null,
+        content: defaultContent
+      }
+    ];
   });
+  const [activeFileId, setActiveFileId] = useState<string | null>('main.py');
+  const [showExplorer, setShowExplorer] = useState<boolean>(true);
+  
+  const activeFile = files.find(f => f.id === activeFileId);
+  const code = activeFile?.content || '';
+
   const [terminalHistory, setTerminalHistory] = useState<TerminalLine[]>(() => {
     const saved = localStorage.getItem('python_terminal_history');
     return saved ? JSON.parse(saved) : [];
@@ -72,8 +100,13 @@ export default function App() {
   const outputRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    localStorage.setItem('python_code', code);
-  }, [code]);
+    localStorage.setItem('python_files', JSON.stringify(files));
+    // Also update legacy python_code for backward compatibility if main.py exists
+    const mainFile = files.find(f => f.id === 'main.py');
+    if (mainFile && mainFile.content) {
+      localStorage.setItem('python_code', mainFile.content);
+    }
+  }, [files]);
 
   useEffect(() => {
     localStorage.setItem('python_terminal_history', JSON.stringify(terminalHistory));
@@ -164,6 +197,44 @@ export default function App() {
     };
   }, []);
 
+  const writeFilesToPyodide = () => {
+    if (!pyodideRef.current) return;
+    
+    const getFullPath = (nodeId: string): string => {
+      const node = files.find(f => f.id === nodeId);
+      if (!node) return '';
+      if (node.parentId === null) return node.name;
+      return `${getFullPath(node.parentId)}/${node.name}`;
+    };
+
+    const getDepth = (nodeId: string): number => {
+      const node = files.find(f => f.id === nodeId);
+      if (!node || node.parentId === null) return 0;
+      return 1 + getDepth(node.parentId);
+    };
+
+    const sortedFiles = [...files].sort((a, b) => getDepth(a.id) - getDepth(b.id));
+
+    for (const file of sortedFiles) {
+      const path = getFullPath(file.id);
+      if (!path) continue;
+      
+      if (file.type === 'folder') {
+        try {
+          pyodideRef.current.FS.mkdir(path);
+        } catch (e) {
+          // Ignore if exists
+        }
+      } else {
+        try {
+          pyodideRef.current.FS.writeFile(path, file.content || '');
+        } catch (e) {
+          console.error(`Failed to write file ${path}`, e);
+        }
+      }
+    }
+  };
+
   const runCode = async (isContinuation: boolean | React.MouseEvent = false) => {
     if (!pyodideRef.current) return;
     
@@ -173,7 +244,7 @@ export default function App() {
       setIsRunning(true);
       providedInputsRef.current = [];
       currentRunTypeRef.current = 'script';
-      const initialHistory: TerminalLine[] = [{ type: 'system', content: '--- Executando meu_script.py ---' }];
+      const initialHistory: TerminalLine[] = [{ type: 'system', content: `--- Executando ${activeFile?.name || 'meu_script.py'} ---` }];
       historyBeforeRunRef.current = initialHistory;
       setTerminalHistory(initialHistory);
     }
@@ -183,6 +254,9 @@ export default function App() {
     (window as any).isWaitingForInput = false;
 
     try {
+      // Write files to Pyodide FS
+      writeFilesToPyodide();
+
       // Redirect stdout
       pyodideRef.current.setStdout({
         batched: (msg: string) => {
@@ -256,6 +330,9 @@ builtins.input = custom_input
     (window as any).isWaitingForInput = false;
 
     try {
+      // Write files to Pyodide FS
+      writeFilesToPyodide();
+
       pyodideRef.current.setStdout({
         batched: (msg: string) => {
           outputBufferRef.current.push({ type: 'output', content: msg });
@@ -374,28 +451,51 @@ builtins.input = custom_input
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'meu_script.py';
+    a.download = activeFile?.name || 'meu_script.py';
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const generateId = () => Math.random().toString(36).substring(2, 9);
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const content = event.target?.result;
-      if (typeof content === 'string') {
-        setCode(content);
-      }
+  const handleCreateNode = (name: string, type: 'file' | 'folder', parentId: string | null) => {
+    const newNode: FileNode = {
+      id: generateId(),
+      name,
+      type,
+      parentId,
+      content: type === 'file' ? '' : undefined
     };
-    reader.readAsText(file);
+    setFiles(prev => [...prev, newNode]);
+    if (type === 'file') {
+      setActiveFileId(newNode.id);
+    }
+  };
+
+  const handleRenameNode = (id: string, newName: string) => {
+    setFiles(prev => prev.map(f => f.id === id ? { ...f, name: newName } : f));
+  };
+
+  const handleDeleteNode = (id: string) => {
+    if (id === 'main.py') {
+      alert('Não é possível excluir o arquivo principal main.py');
+      return;
+    }
     
-    // Reset the input value so the same file can be selected again if needed
-    e.target.value = '';
+    // Find all children to delete
+    const getChildrenIds = (nodeId: string): string[] => {
+      const children = files.filter(f => f.parentId === nodeId).map(f => f.id);
+      return [...children, ...children.flatMap(getChildrenIds)];
+    };
+    
+    const idsToDelete = new Set([id, ...getChildrenIds(id)]);
+    setFiles(prev => prev.filter(f => !idsToDelete.has(f.id)));
+    
+    if (activeFileId && idsToDelete.has(activeFileId)) {
+      setActiveFileId('main.py');
+    }
   };
 
   const handlePaste = (e: React.ClipboardEvent) => {
@@ -428,7 +528,7 @@ builtins.input = custom_input
     const after = code.substring(textarea.selectionStart);
     
     const newCode = before + suggestion + after;
-    setCode(newCode);
+    setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: newCode } : f));
     setShowSuggestions(false);
     
     // Set cursor position after the inserted word
@@ -439,7 +539,7 @@ builtins.input = custom_input
   };
 
   const handleCodeChange = (newCode: string) => {
-    setCode(newCode);
+    setFiles(prev => prev.map(f => f.id === activeFileId ? { ...f, content: newCode } : f));
     
     // Need to wait for DOM update to get correct cursor position
     setTimeout(() => {
@@ -520,6 +620,13 @@ builtins.input = custom_input
       {/* Header */}
       <header className="flex items-center justify-between px-6 py-3 bg-[#252526] border-b border-[#333]">
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowExplorer(!showExplorer)}
+            className="p-1.5 text-gray-400 hover:text-white hover:bg-[#333] rounded-md transition-colors"
+            title="Alternar Explorador de Arquivos"
+          >
+            <Menu size={20} />
+          </button>
           <div className="w-8 h-8 bg-blue-600 rounded-md flex items-center justify-center">
             <Terminal size={18} className="text-white" />
           </div>
@@ -530,16 +637,6 @@ builtins.input = custom_input
         </div>
         
         <div className="flex items-center gap-3">
-          <label className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 bg-[#333] hover:bg-[#444] rounded-md transition-colors cursor-pointer">
-            <Upload size={16} />
-            Importar .py
-            <input
-              type="file"
-              accept=".py,.txt"
-              onChange={handleImport}
-              className="hidden"
-            />
-          </label>
           <button
             onClick={handleSave}
             className="flex items-center gap-2 px-3 py-1.5 text-sm font-medium text-gray-300 bg-[#333] hover:bg-[#444] rounded-md transition-colors"
@@ -569,10 +666,22 @@ builtins.input = custom_input
 
       {/* Main Content */}
       <main className="flex flex-1 overflow-hidden">
+        {/* File Explorer */}
+        {showExplorer && (
+          <FileExplorer
+            files={files}
+            activeFileId={activeFileId}
+            onSelectFile={setActiveFileId}
+            onCreateNode={handleCreateNode}
+            onRenameNode={handleRenameNode}
+            onDeleteNode={handleDeleteNode}
+          />
+        )}
+
         {/* Editor Pane */}
         <div className="flex-1 flex flex-col border-r border-[#333]">
           <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex justify-between items-center">
-            <span>meu_script.py</span>
+            <span>{activeFile?.name || 'meu_script.py'}</span>
             <span className="text-yellow-500 flex items-center gap-1">
               <AlertCircle size={12} />
               Colar desativado
