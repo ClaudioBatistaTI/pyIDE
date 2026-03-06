@@ -4,6 +4,7 @@ import Prism from 'prismjs';
 import 'prismjs/components/prism-python';
 import 'prismjs/themes/prism-tomorrow.css';
 import { Play, Save, Terminal, AlertCircle, Loader2, Download, Trash2, Eye, EyeOff } from 'lucide-react';
+import getCaretCoordinates from 'textarea-caret';
 
 // Declare pyodide global
 declare global {
@@ -17,14 +18,33 @@ type TerminalLine = {
   content: string;
 };
 
+const PYTHON_KEYWORDS = [
+  'False', 'None', 'True', 'and', 'as', 'assert', 'async', 'await', 'break', 'class',
+  'continue', 'def', 'del', 'elif', 'else', 'except', 'finally', 'for', 'from', 'global',
+  'if', 'import', 'in', 'is', 'lambda', 'nonlocal', 'not', 'or', 'pass', 'raise', 'return',
+  'try', 'while', 'with', 'yield',
+  'print', 'len', 'range', 'str', 'int', 'float', 'list', 'dict', 'set', 'tuple', 'bool',
+  'type', 'dir', 'help', 'input', 'open', 'sum', 'max', 'min', 'abs', 'round', 'enumerate',
+  'zip', 'map', 'filter', 'any', 'all'
+];
+
 export default function App() {
-  const [code, setCode] = useState<string>('# Escreva seu código Python aqui\nprint("Olá, Mundo!")\n');
+  const [code, setCode] = useState<string>('# Escreva seu código Python aqui\nnome = input("Qual é o seu nome? ")\nprint(f"Olá, {nome}!")\n');
+  const [stdin, setStdin] = useState<string>('');
   const [terminalHistory, setTerminalHistory] = useState<TerminalLine[]>([]);
   const [terminalInput, setTerminalInput] = useState<string>('');
   const [showPrompt, setShowPrompt] = useState<boolean>(true);
   const [isPyodideLoading, setIsPyodideLoading] = useState<boolean>(true);
   const [isRunning, setIsRunning] = useState<boolean>(false);
   const [initError, setInitError] = useState<string | null>(null);
+  
+  // Autocomplete state
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [suggestionIndex, setSuggestionIndex] = useState(0);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [caretCoords, setCaretCoords] = useState({ top: 0, left: 0, height: 0 });
+  const [wordStart, setWordStart] = useState(0);
+
   const pyodideRef = useRef<any>(null);
   const outputRef = useRef<HTMLDivElement>(null);
 
@@ -34,6 +54,7 @@ export default function App() {
         pyodideRef.current = await window.loadPyodide({
           indexURL: 'https://cdn.jsdelivr.net/pyodide/v0.25.0/full/',
         });
+
         setIsPyodideLoading(false);
       } catch (err) {
         console.error('Failed to load Pyodide:', err);
@@ -116,6 +137,14 @@ export default function App() {
         }
       });
 
+      // Set stdin
+      pyodideRef.current.globals.set("js_stdin", stdin);
+      pyodideRef.current.runPython(`
+import sys
+import io
+sys.stdin = io.StringIO(js_stdin)
+      `);
+
       await pyodideRef.current.runPythonAsync(code);
       
     } catch (err: any) {
@@ -174,6 +203,81 @@ export default function App() {
   const handlePaste = (e: React.ClipboardEvent) => {
     e.preventDefault();
     alert('⚠️ Colar código não é permitido!\n\nPara aprender de verdade, você deve digitar o código. A prática leva à perfeição!');
+  };
+
+  const handleEditorKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (showSuggestions && suggestions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setSuggestionIndex((prev) => (prev + 1) % suggestions.length);
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setSuggestionIndex((prev) => (prev - 1 + suggestions.length) % suggestions.length);
+      } else if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault();
+        insertSuggestion(suggestions[suggestionIndex]);
+      } else if (e.key === 'Escape') {
+        setShowSuggestions(false);
+      }
+    }
+  };
+
+  const insertSuggestion = (suggestion: string) => {
+    const textarea = document.getElementById('code-editor') as HTMLTextAreaElement;
+    if (!textarea) return;
+    
+    const before = code.substring(0, wordStart);
+    const after = code.substring(textarea.selectionStart);
+    
+    const newCode = before + suggestion + after;
+    setCode(newCode);
+    setShowSuggestions(false);
+    
+    // Set cursor position after the inserted word
+    setTimeout(() => {
+      textarea.focus();
+      textarea.setSelectionRange(wordStart + suggestion.length, wordStart + suggestion.length);
+    }, 0);
+  };
+
+  const handleCodeChange = (newCode: string) => {
+    setCode(newCode);
+    
+    // Need to wait for DOM update to get correct cursor position
+    setTimeout(() => {
+      const textarea = document.getElementById('code-editor') as HTMLTextAreaElement;
+      if (!textarea) return;
+      
+      const cursorPos = textarea.selectionStart;
+      const textBeforeCursor = newCode.substring(0, cursorPos);
+      
+      // Find the current word being typed
+      const match = textBeforeCursor.match(/[a-zA-Z_][a-zA-Z0-9_]*$/);
+      
+      if (match) {
+        const word = match[0];
+        const start = cursorPos - word.length;
+        
+        const filtered = PYTHON_KEYWORDS.filter(kw => 
+          kw.toLowerCase().startsWith(word.toLowerCase()) && kw !== word
+        ).slice(0, 5); // Max 5 suggestions
+        
+        if (filtered.length > 0) {
+          setSuggestions(filtered);
+          setSuggestionIndex(0);
+          setShowSuggestions(true);
+          setWordStart(start);
+          
+          // Get coordinates
+          const coords = getCaretCoordinates(textarea, cursorPos);
+          setCaretCoords({ top: coords.top, left: coords.left, height: coords.height });
+        } else {
+          setShowSuggestions(false);
+        }
+      } else {
+        setShowSuggestions(false);
+      }
+    }, 0);
   };
 
   return (
@@ -247,10 +351,14 @@ export default function App() {
             <div 
               className="flex-1 relative"
               onPasteCapture={handlePaste}
+              onKeyDownCapture={handleEditorKeyDown}
+              onClick={() => setShowSuggestions(false)}
+              onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
             >
               <Editor
+                textareaId="code-editor"
                 value={code}
-                onValueChange={setCode}
+                onValueChange={handleCodeChange}
                 highlight={code => Prism.highlight(code, Prism.languages.python, 'python')}
                 padding={16}
                 style={{
@@ -264,38 +372,79 @@ export default function App() {
                 textareaClassName="focus:outline-none"
                 className="language-python min-h-full"
               />
+              
+              {showSuggestions && suggestions.length > 0 && (
+                <div 
+                  className="absolute z-50 bg-[#252526] border border-[#454545] rounded-md shadow-lg overflow-hidden"
+                  style={{
+                    top: caretCoords.top + caretCoords.height,
+                    left: caretCoords.left,
+                  }}
+                >
+                  {suggestions.map((sug, idx) => (
+                    <div 
+                      key={sug}
+                      className={`px-3 py-1.5 text-sm font-mono cursor-pointer ${
+                        idx === suggestionIndex ? 'bg-[#094771] text-white' : 'text-gray-300 hover:bg-[#2a2d2e]'
+                      }`}
+                      onMouseDown={(e) => {
+                        e.preventDefault(); // Prevent blur
+                        insertSuggestion(sug);
+                      }}
+                    >
+                      {sug}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Terminal Pane */}
+        {/* Right Pane */}
         <div className="w-1/3 flex flex-col bg-[#1e1e1e]">
-          <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              <Terminal size={14} />
-              Saída do Terminal
+          {/* Stdin Pane */}
+          <div className="h-1/3 flex flex-col border-b border-[#333]">
+            <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex items-center gap-2">
+              Entrada Padrão (stdin)
             </div>
-            <div className="flex items-center gap-3">
-              <button 
-                onClick={() => setShowPrompt(!showPrompt)}
-                className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
-                title={showPrompt ? "Ocultar Prompt" : "Mostrar Prompt"}
-              >
-                {showPrompt ? <EyeOff size={14} /> : <Eye size={14} />}
-                {showPrompt ? "Ocultar" : "Mostrar"}
-              </button>
-              <button 
-                onClick={() => setTerminalHistory([])}
-                className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
-                title="Limpar Terminal"
-              >
-                <Trash2 size={14} />
-                Limpar
-              </button>
-            </div>
+            <textarea
+              value={stdin}
+              onChange={(e) => setStdin(e.target.value)}
+              placeholder="Se o seu código usa input(), digite os valores aqui (um por linha) ANTES de clicar em Executar..."
+              className="flex-1 bg-[#1e1e1e] text-gray-300 p-4 font-mono text-sm resize-none focus:outline-none"
+              spellCheck="false"
+            />
           </div>
+
+          {/* Terminal Pane */}
+          <div className="flex-1 flex flex-col">
+            <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex justify-between items-center">
+              <div className="flex items-center gap-2">
+                <Terminal size={14} />
+                Saída do Terminal
+              </div>
+              <div className="flex items-center gap-3">
+                <button 
+                  onClick={() => setShowPrompt(!showPrompt)}
+                  className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
+                  title={showPrompt ? "Ocultar Prompt" : "Mostrar Prompt"}
+                >
+                  {showPrompt ? <EyeOff size={14} /> : <Eye size={14} />}
+                  {showPrompt ? "Ocultar" : "Mostrar"}
+                </button>
+                <button 
+                  onClick={() => setTerminalHistory([])}
+                  className="flex items-center gap-1 text-gray-400 hover:text-gray-200 transition-colors"
+                  title="Limpar Terminal"
+                >
+                  <Trash2 size={14} />
+                  Limpar
+                </button>
+              </div>
+            </div>
           
-          <div className="flex-1 p-4 overflow-auto font-mono text-sm" ref={outputRef}>
+            <div className="flex-1 p-4 overflow-auto font-mono text-sm" ref={outputRef}>
             {isPyodideLoading ? (
               <div className="flex items-center gap-2 text-blue-400">
                 <Loader2 size={16} className="animate-spin" />
@@ -344,6 +493,7 @@ export default function App() {
               </form>
             )}
           </div>
+        </div>
         </div>
       </main>
     </div>
