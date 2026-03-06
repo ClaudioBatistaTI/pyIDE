@@ -30,7 +30,6 @@ const PYTHON_KEYWORDS = [
 
 export default function App() {
   const [code, setCode] = useState<string>('# Escreva seu código Python aqui\nnome = input("Qual é o seu nome? ")\nprint(f"Olá, {nome}!")\n');
-  const [stdin, setStdin] = useState<string>('');
   const [terminalHistory, setTerminalHistory] = useState<TerminalLine[]>([]);
   const [terminalInput, setTerminalInput] = useState<string>('');
   const [showPrompt, setShowPrompt] = useState<boolean>(true);
@@ -137,12 +136,27 @@ export default function App() {
         }
       });
 
-      // Set stdin
-      pyodideRef.current.globals.set("js_stdin", stdin);
       pyodideRef.current.runPython(`
 import sys
-import io
-sys.stdin = io.StringIO(js_stdin)
+import builtins
+import js
+
+def custom_input(prompt=""):
+    if prompt:
+        print(prompt, end="")
+    
+    try:
+        res = js.prompt(prompt)
+        if res is None:
+            print()
+            return ""
+        print(res)
+        return res
+    except Exception:
+        print("\\n[Erro: O navegador bloqueou o prompt.]")
+        return ""
+
+builtins.input = custom_input
       `);
 
       await pyodideRef.current.runPythonAsync(code);
@@ -401,25 +415,9 @@ sys.stdin = io.StringIO(js_stdin)
           </div>
         </div>
 
-        {/* Right Pane */}
+        {/* Terminal Pane */}
         <div className="w-1/3 flex flex-col bg-[#1e1e1e]">
-          {/* Stdin Pane */}
-          <div className="h-1/3 flex flex-col border-b border-[#333]">
-            <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex items-center gap-2">
-              Entrada Padrão (stdin)
-            </div>
-            <textarea
-              value={stdin}
-              onChange={(e) => setStdin(e.target.value)}
-              placeholder="Se o seu código usa input(), digite os valores aqui (um por linha) ANTES de clicar em Executar..."
-              className="flex-1 bg-[#1e1e1e] text-gray-300 p-4 font-mono text-sm resize-none focus:outline-none"
-              spellCheck="false"
-            />
-          </div>
-
-          {/* Terminal Pane */}
-          <div className="flex-1 flex flex-col">
-            <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex justify-between items-center">
+          <div className="px-4 py-2 bg-[#2d2d2d] text-xs font-medium text-gray-400 flex justify-between items-center">
               <div className="flex items-center gap-2">
                 <Terminal size={14} />
                 Saída do Terminal
@@ -493,7 +491,6 @@ sys.stdin = io.StringIO(js_stdin)
               </form>
             )}
           </div>
-        </div>
         </div>
       </main>
     </div>
