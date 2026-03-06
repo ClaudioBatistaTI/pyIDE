@@ -1,0 +1,5 @@
+{
+  "name": "Python Learning IDE",
+  "description": "A Python IDE for learning that prevents pasting code to encourage typing and understanding.",
+  "requestFramePermissions": []
+}
